@@ -5,8 +5,14 @@ test.py
 outputs/data/
 dist/
 Eolab/masks/
+Eolab/data/
+work/
+.nextflow/
+bin/
 
 Eolab/tiles.txt
 Eolab/test.txt
 *.gpkg
 *.pkl
+.nextflow.log*
+Eolab/datacube-definition.prj

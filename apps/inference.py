@@ -1,3 +1,5 @@
+#! /usr/bin/env python
+
 # TODO fix GPU inference: https://stackoverflow.com/questions/71278607/pytorch-expected-all-tensors-on-same-device
 # TODO script should take path to FORCE tile as input parameter, not query dirs on its own
 import argparse
@@ -22,12 +24,13 @@ parser.add_argument("-w", "--weights", dest="weights", required=True, type=Path,
 parser.add_argument("--input-tiles", dest="input", required=True, type=Path,
                     help="List of FORCE tiles which should be used for inference. Each line should contain one FORCE "
                          "tile specifier (Xdddd_Ydddd).")
-parser.add_argument("--input-dir", dest="base", required=True, type=Path,
-                    help="Path to FORCE datacube.")
+parser.add_argument("--input-dir", dest="base", required=False, type=Path, default=Path("."),
+                    help="Path to FORCE datacube. By default, use the current PWD.")
 parser.add_argument("--input-glob", dest="iglob", required=False, type=str, default="*",
                     help="Optional glob pattern to restricted files used from `input-dir`.")
-parser.add_argument("--output-dir", dest="out", required=True, type=Path,
-                    help="Path to directory into which predictions should be saved.")
+parser.add_argument("--output-dir", dest="out", required=False, type=Path, default=Path("."),
+                    help="Path to directory into which predictions should be saved. By default, use the "
+                        "current PWD.")
 parser.add_argument("--date-cutoff", dest="date", required=True, type=int,
                     help="Cutoff date for time series which should be included in datacube for inference.")
 parser.add_argument("--mask-dir", dest="masks", required=False, type=Path, default=None,
@@ -58,6 +61,8 @@ parser.add_argument("--log", dest="log", required=False, action="store_true",
                     help="Emit logs?")
 parser.add_argument("--log-file", dest="log-file", required=False, type=str,
                     help="If logging is enabled, write to this file. If omitted, logs are written to stdout.")
+parser.add_argument("--cpus", dest="cpus", required=False, default=None, type=int,
+                    help="Number of CPUS for Inter-OP and Intra-OP parallelization of pytorch.")
 
 cli_args: Dict[str, Union[Path, int, bool, str]] = vars(parser.parse_args())
 
@@ -69,6 +74,10 @@ if cli_args.get("log"):
 
 with open(cli_args.get("input"), "rt") as f:
     FORCE_tiles: List[str] = [tile.replace("\n", "") for tile in f.readlines()]
+
+if (cli_args.get("cpus")):
+    torch.set_num_threads(cli_args.get("cpus"))
+    torch.set_num_interop_threads(cli_args.get("cpus"))
 
 lstm: torch.nn.LSTM = torch.load(cli_args.get("weights"), map_location=torch.device('cpu')).eval()
 
@@ -167,7 +176,11 @@ for tile in FORCE_tiles:
             )
             """
             if cli_args.get("masks"):
-                mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob(cli_args.get("mglob"))][0]
+                try:
+                    mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob(cli_args.get("mglob"))][0]
+                except IndexError:
+                    mask_path: str = [str(p) for p in cli_args.get("masks").glob(cli_args.get("mglob"))][0]
+                
                 with rxr.open_rasterio(mask_path) as ds:
                     mask_ds: xarray.Dataset = ds.isel(y=slice(row, row + row_step),
                                                       x=slice(col, col + col_step))
@@ -177,7 +190,7 @@ for tile in FORCE_tiles:
             logging.info(f"Converting chunked numpy array to torch tensor")
             s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt)
 
-            if cli_args.get("mask-dir"):
+            if cli_args.get("masks"):
                 merged_row: torch.Tensor = torch.zeros(col_step, dtype=torch.long)
                 for chunk_rows in range(0, row_step):
                     merged_row.zero_()
