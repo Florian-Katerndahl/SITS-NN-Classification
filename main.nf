@@ -18,7 +18,6 @@ def worldcoverTiles = { inarr ->
             locationIDs.add("${latstr}${latitude.toString().padLeft(2, '0')}${lonstr}${longitude.toString().padLeft(3, '0')}");
         }
     }
-
     return locationIDs;
 }
 
@@ -52,7 +51,6 @@ workflow {
         | map { it -> [it[0], it[1].findAll { jt -> jt.baseName =~ /SEN2[AB]_BOA/ }, it[2] ] }
         | filter { it -> it[1].size() > 0}
         | combine(Channel.fromPath(params.model))
-        | take(2) // TODO REMOVE AFTER PROTOTYPING
 
     inference_ch
         | INFERENCE
