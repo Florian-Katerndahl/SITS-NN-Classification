@@ -40,10 +40,4 @@ WORKDIR ${HOME}
 
 RUN pip install /usr/src/sits/dist/sits_classification-0.1.0-py3-none-any.whl
 
-# TODO Nextflow allows processes to access executable scripts/binaries which are implicitly moved to the executing container/environment
-#  when they're in a directory called 'bin'. Symlinked the apps directory to the bin dir. Maybe this works, dunno
-#  Also not sure if this is the best idea when moving the execution to something other than local executor together with not having a 
-#  bin dir in the gh-repo (which should not be created since it would duplicate files)
-#COPY apps/inference.py .
-
 CMD [ "bash" ]
