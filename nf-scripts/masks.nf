@@ -39,7 +39,6 @@ process CUBE {
 }
 
 process BINMASK {
-  // TODO Don't hardcode blocksizes?!
   cpus 1
   container 'floriankaterndahl/cpu-inference:0.0.1'
   publishDir "Eolab/masks/${tileID}", mode: 'copy', overwrite: true, pattern: "mask.tif"
@@ -53,9 +52,13 @@ process BINMASK {
   script:
   tileID = tiledir[-1].toString()
   """
+  gdalinfo -json ${tiledir}/base.tif > info.json
+  XSIZE=\$(cat info.json | jq '.bands[] | .block[]' | head -n 1)
+  YSIZE=\$(cat info.json | jq '.bands[] | .block[]' | tail -n 1)
+
   gdal_calc.py -A ${tiledir}/base.tif --outfile=mask.tif --overwrite \
     --calc="1*logical_and(A>=10,A<20)" --type=Byte --NoDataValue=0 \
-    --creation-option="BLOCKYSIZE=300" --creation-option="BLOCKXSIZE=3000" \
+    --creation-option="BLOCKYSIZE=\${YSIZE}" --creation-option="BLOCKXSIZE=\${XSIZE}" \
     --creation-option="COMPRESS=LZW" --creation-option="PREDICTOR=2"
   """
 }
