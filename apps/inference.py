@@ -147,34 +147,6 @@ for tile in FORCE_tiles:
             del s2_cube
             del s2_cube_np
 
-            """
-            The code below uses masked tensors to mask the actual data cube instead of dropping unwanted observations
-            during prediction. However, at the time of writing, the method ADDMM is not implemented for masked tensors
-            in torch. Thus, inference fails when the model used, such as a lstm, calls this method somewhere.
-            It could be worth revisiting this approach in the future as it may be more generalizable and potentially
-            reduce memory usage.
-            
-            Additionally, masked tensors don't play well view tensor views. Thus, during inference, actual data copying
-            is necessary (s2_cube_torch[chunk_rows].contiguous()). But since this is only done on a row by row basis, the actual impact memory wise should
-            be negligible.
-            
-            # TODO dont hardcode filename and zero index
-            mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob("mask.tif")][0]
-            with rxr.open_rasterio(mask_path) as ds:
-                mask_ds: xarray.Dataset = ds.isel(y=slice(row, row + row_step),
-                                                  x=slice(col, col + col_step))
-                a: np.ndarray = np.array(mask_ds, ndmin=2, dtype=np.bool_)
-                b: np.ndarray = np.expand_dims(a, axis=0)
-                c: np.ndarray = np.repeat(b, 10, axis=1)
-                d: np.ndarray = np.repeat(c, 323, axis=0)
-                del mask_ds, a, b, c
-            masked_array: torch.Tensor = torch.reshape(torch.from_numpy(d), (100, 100, 323, 10))  # no views, errors otherwise
-            logging.info("Creating masked tensor")
-            s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.masked.as_masked_tensor(
-                torch.from_numpy(s2_cube_npt),
-                masked_array
-            )
-            """
             if cli_args.get("masks"):
                 try:
                     mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob(cli_args.get("mglob"))][0]
