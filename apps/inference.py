@@ -168,12 +168,6 @@ for tile in FORCE_tiles:
                     merged_row.zero_()
                     squeezed_row: torch.Tensor = predict(
                         lstm,
-                        # lines below are achieve the same subset
-                        # torch.index_select(
-                        #     s2_cube_torch[chunk_rows],
-                        #     0,
-                        #     torch.from_numpy(
-                        #         np.indices((1, mask.shape[1]), dtype=np.int32)[1, 0, mask[chunk_rows]])))
                         s2_cube_torch[chunk_rows, mask[chunk_rows]])
                     merged_row[mask[chunk_rows]] = squeezed_row
                     output_torch[row + chunk_rows, col:col + col_step] = merged_row
