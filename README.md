@@ -9,8 +9,6 @@ Not all of the following sections apply to all usecases.
 
 ## Installation
 
-:warning: Read the section `tensorflow` before installing from source!
-
 ### Python Wheels
 
 **Currently not available!**
@@ -41,16 +39,6 @@ To revert back to the CUDA 12.1 wheels, run:
 poetry remove torch torchvision torchaudio
 poetry add torch torchvision torchaudio
 ```
-
-#### Tensorflow
-
-Apparently, since tensorflow 2.11, the metadata content in the supplied wheels differ from platform to platform insted
-of using version markers. Because of that, installation using poetry fails since it downloads the first wheel it
-finds. There are two possible soultions, while I only managed to get things working using the first:
-
-1. Specify a specific verison of tensorflow, e.g. `poetry add tensorflow==2.15.0` will install the newest version at
-the time of writing
-2. Apply patches to poetry before installing the dependencies as specified [here](https://github.com/mazyod/poetry-legacy-index).
 
 ## Usage
 
@@ -110,52 +98,3 @@ python apps/inference.py --help
 #   --log-file LOG-FILE   If logging is enabled, write to this file. If omitted, logs are written to stdout.
 #   --cpus CPUS           Number of CPUS for Inter-OP and Intra-OP parallelization of pytorch.
 ```
-
-## Nextflow Workflow Execution
-
-This repository also contains the tree species classification packaged as a [Nextflow](https://www.nextflow.io/) workflow for easy, scalable and 
-reproducable execution. For an introduction to Nextflow as well as detailed explanations of the philsophy behind it, 
-please vist the follwing websites:
-
-1. https://www.nextflow.io/
-2. https://training.nextflow.io/
-3. https://www.nextflow.io/docs/latest/index.html
-
-### Prerequisites
-
-#### Installing Nextflow
-
-The official installation instructions are depicted [here](https://www.nextflow.io/docs/latest/getstarted.html#requirements). 
-
-#### Installing Docker
-
-To ease portability, the processes don't run directly on the host operating system. Instead, containers (here: Docker) are 
-used to create isolated environments containing (almost) all dependencies needed for execution. Thus, Docker needs to be 
-installed on the host system executing the workflow. Please check the [official documentation](https://docs.docker.com/engine/install/) 
-on how to install Docker on your system. Additionally, make sure that the user who runs the workflow is allowed to 
-use Docker.
-
-### Executing the Pipeline
-
-The workflow is currently setup to be executed either locally, e.g. your personal computer or a single remote 
-server, or on a Kubernetes cluster.
-
-The workflow relies on a directory called `bin` in the root of this project which contains additional scripts/binary 
-exectuable files which are used in workflow processes. Nextflow automatically adds this folder to the path variable/copies 
-the respective files to a remote system and thus makes them usable inside of the containers which are used for workflow 
-execution. Symlinking the respective files into this directory is sufficient.
-
-During devlopment or when running the workflow periodically, unsing the caching functionality of Nextflow with the `-resume` 
-flag is benefical. Nonetheless, periodically removing the `work` directory (default cache location) and directories created 
-under `/tmp` may be necessary.
-
-Any additional workflow configuration is done via the `nextflow.config` file. Specifying parameters on the command line 
-during workflow execution will overwrite them.
-
-#### Local Executor
-
-> What may be of interes here?
-
-#### Kubernetes Cluster
-
-*To be implemented*
