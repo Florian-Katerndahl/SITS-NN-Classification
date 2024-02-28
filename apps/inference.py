@@ -1,11 +1,11 @@
 #! /usr/bin/env python
 
 # TODO fix GPU inference: https://stackoverflow.com/questions/71278607/pytorch-expected-all-tensors-on-same-device
-# TODO script should take path to FORCE tile as input parameter, not query dirs on its own
 import argparse
+from datetime import datetime
 from pathlib import Path
 from re import search
-from typing import List, Any, Union, Dict
+from typing import List, Union, Dict, Optional
 import numpy as np
 import rasterio
 import rioxarray as rxr
@@ -14,6 +14,7 @@ import xarray
 import logging
 from time import time
 from sits_classifier import models
+from sits_classifier.utils.inference import ModelType, fp_to_doy, predict_lstm, predict_transformer, pad_doy_sequence, pad_datacube
 
 parser: argparse.ArgumentParser = argparse.ArgumentParser(
     description="Run inference with already trained LSTM classifier on a remote-sensing time series represented as "
@@ -72,32 +73,25 @@ if cli_args.get("log"):
     else:
         logging.basicConfig(level=logging.INFO)
 
-with open(cli_args.get("input"), "rt") as f:
-    FORCE_tiles: List[str] = [tile.replace("\n", "") for tile in f.readlines()]
-
 if (cli_args.get("cpus")):
     torch.set_num_threads(cli_args.get("cpus"))
     torch.set_num_interop_threads(cli_args.get("cpus"))
 
-lstm: torch.nn.LSTM = torch.load(cli_args.get("weights"), map_location=torch.device('cpu')).eval()
+device: str = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+inference_model: Union[torch.nn.LSTM, torch.nn.Transformer] = torch.load(cli_args.get("weights"), map_location=device).eval()
 
-def predict(model, data: torch.tensor) -> Any:
-    """
-    Apply previously trained LSTM to new data
-    :param model: previously trained model
-    :param torch.tensor data: new input data
-    :return Any: Array of predictions
-    """
-    # TODO https://pytorch.org/docs/stable/notes/cpu_threading_torchscript_inference.html suggests that
-    #      multi-threading is possible and I observe multi-CPU usage.
-    #      Is multi-threading on by default? Documentation suggests no, but I'm not sure.
-    #      torch.__config__.parallel_info() suggests, that multi-threading is active!
-    with torch.no_grad():
-        outputs = model(data)
-    _, predicted = torch.max(outputs.data, 1)
-    return predicted
+if "lstm" in inference_model.__module__.lower():
+    inference_type: ModelType = ModelType.LSTM
+elif "transformer" in inference_model.__module__.lower():
+    inference_type: ModelType = ModelType.TRANSFORMER
+else:
+    raise RuntimeError("Unknown model type supplied")
 
+with open(cli_args.get("input"), "rt") as f:
+    FORCE_tiles: List[str] = [tile.replace("\n", "") for tile in f.readlines()]
+
+TRANSFORMER_TARGET_LENGTH: int = 329
 
 for tile in FORCE_tiles:
     start: float = time()
@@ -107,6 +101,7 @@ for tile in FORCE_tiles:
     cube_inputs: List[str] = [
         tile_path for tile_path in tile_paths if int(search(r"\d{8}", tile_path).group(0)) <= cli_args.get("date")
     ]
+    cube_inputs.sort()
 
     with rasterio.open(cube_inputs[0]) as f:
         metadata = f.meta
@@ -141,11 +136,45 @@ for tile in FORCE_tiles:
 
             logging.info(f"Converting chunked data cube to numpy array")
             s2_cube_np: np.ndarray = np.array(s2_cube, ndmin=4, dtype=np.float32)
+                        
+            if inference_type ==  ModelType.TRANSFORMER:
+                logging.info("Adding DOY information to data cube")
+                # observations: int = len(cube_inputs)
+                sensing_doys: List[Union[datetime, float]] = pad_doy_sequence(TRANSFORMER_TARGET_LENGTH, [fp_to_doy(it) for it in cube_inputs])
+                sensing_doys_np: np.ndarray = np.array(sensing_doys)
+                sensing_doys_np = sensing_doys_np.reshape((TRANSFORMER_TARGET_LENGTH, 1, 1, 1))
+                sensing_doys_np = np.repeat(sensing_doys_np, row_step, axis=2)  # match actual data cube
+                sensing_doys_np = np.repeat(sensing_doys_np, col_step, axis=3)  # match actual data cube
+                s2_cube_np = pad_datacube(TRANSFORMER_TARGET_LENGTH, s2_cube_np)
+                s2_cube_np = np.concatenate((s2_cube_np, sensing_doys_np), axis=1)
+
             logging.info("Transposing Numpy array")
             s2_cube_npt: np.ndarray = np.transpose(s2_cube_np, (2, 3, 0, 1))
 
             del s2_cube
             del s2_cube_np
+            del sensing_doys
+
+            if inference_type == ModelType.TRANSFORMER:
+                logging.info("Normalizing data cube")
+                # x = col_step
+                # y = row_step
+                observations: int = s2_cube_npt.shape[2]
+                bands: int = s2_cube_npt.shape[3]
+                bn_layer: torch.nn.BatchNorm1d = torch.nn.BatchNorm1d(bands)
+                #s2_cube_npt_norm = np.zeros(*s2_cube_npt.shape)
+                for row in range(row_step):
+                    for col in range(col_step):
+                        pixel: np.ndarray = s2_cube_npt[row, col, :, :]
+                        pixel[pixel == -9999.0] = 0
+                        pixel_torch: torch.tensor = torch.from_numpy(pixel).float()
+                        pixel_normalized: np.ndarray = bn_layer(pixel_torch).detach().numpy()
+                        # FIXME Why the offsets and on dimension less than above where pixel object was created?
+                        #s2_cube_npt_norm[row:row + 329, col:col + 11, :] = pixel_normalized
+                        s2_cube_npt[row:row + observations, col:col + bands, :] = pixel_normalized
+
+
+            mask: Optional[np.ndarray] = None
 
             if cli_args.get("masks"):
                 try:
@@ -159,22 +188,17 @@ for tile in FORCE_tiles:
                     mask: np.ndarray = np.squeeze(np.array(mask_ds, ndmin=2, dtype=np.bool_), axis=0)
                     del mask_ds
 
-            logging.info(f"Converting chunked numpy array to torch tensor")
+            logging.info(f"Converting chunked numpy array to torch tensor, moving tensor to '{device}'.")
             s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt)
+            s2_cube_torch = s2_cube_torch.to(device)
 
-            if cli_args.get("masks"):
-                merged_row: torch.Tensor = torch.zeros(col_step, dtype=torch.long)
-                for chunk_rows in range(0, row_step):
-                    merged_row.zero_()
-                    squeezed_row: torch.Tensor = predict(
-                        lstm,
-                        s2_cube_torch[chunk_rows, mask[chunk_rows]])
-                    merged_row[mask[chunk_rows]] = squeezed_row
-                    output_torch[row + chunk_rows, col:col + col_step] = merged_row
+            if inference_type == ModelType.LSTM:
+                output_torch[row:row + row_step, col:col + col_step] = predict_lstm(inference_model, s2_cube_torch, mask,
+                                                                                    col, col_step, row, row_step)
             else:
-                for chunk_rows in range(0, row_step):
-                    output_torch[row + chunk_rows, col:col + col_step] = predict(lstm, s2_cube_torch[chunk_rows])
-
+                output_torch[row:row + row_step, col:col + col_step] = predict_transformer(inference_model, s2_cube_torch, mask,
+                                                                                           col, col_step, row, row_step, device)
+                        
             logging.info(f"Processed chunk in {time() - start_chunked:.2f} seconds")
 
             del s2_cube_torch
