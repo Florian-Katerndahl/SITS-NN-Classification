@@ -91,7 +91,7 @@ else:
 with open(cli_args.get("input"), "rt") as f:
     FORCE_tiles: List[str] = [tile.replace("\n", "") for tile in f.readlines()]
 
-TRANSFORMER_TARGET_LENGTH: int = 329
+TRANSFORMER_TARGET_LENGTH: int = 329  # TODO get from transformer class, if implemented?
 
 for tile in FORCE_tiles:
     start: float = time()
@@ -139,7 +139,6 @@ for tile in FORCE_tiles:
                         
             if inference_type ==  ModelType.TRANSFORMER:
                 logging.info("Adding DOY information to data cube")
-                # observations: int = len(cube_inputs)
                 sensing_doys: List[Union[datetime, float]] = pad_doy_sequence(TRANSFORMER_TARGET_LENGTH, [fp_to_doy(it) for it in cube_inputs])
                 sensing_doys_np: np.ndarray = np.array(sensing_doys)
                 sensing_doys_np = sensing_doys_np.reshape((TRANSFORMER_TARGET_LENGTH, 1, 1, 1))
@@ -157,20 +156,15 @@ for tile in FORCE_tiles:
 
             if inference_type == ModelType.TRANSFORMER:
                 logging.info("Normalizing data cube")
-                # x = col_step
-                # y = row_step
-                observations: int = s2_cube_npt.shape[2]
+                observations: int = s2_cube_npt.shape[2]  # is fixed to time series sequnece length (currently TRANSFORMER_TARGET_LENGTH) due to transformations above
                 bands: int = s2_cube_npt.shape[3]
                 bn_layer: torch.nn.BatchNorm1d = torch.nn.BatchNorm1d(bands)
-                #s2_cube_npt_norm = np.zeros(*s2_cube_npt.shape)
                 for row in range(row_step):
                     for col in range(col_step):
                         pixel: np.ndarray = s2_cube_npt[row, col, :, :]
                         pixel[pixel == -9999.0] = 0
                         pixel_torch: torch.tensor = torch.from_numpy(pixel).float()
                         pixel_normalized: np.ndarray = bn_layer(pixel_torch).detach().numpy()
-                        # FIXME Why the offsets and on dimension less than above where pixel object was created?
-                        #s2_cube_npt_norm[row:row + 329, col:col + 11, :] = pixel_normalized
                         s2_cube_npt[row:row + observations, col:col + bands, :] = pixel_normalized
 
 
@@ -189,7 +183,7 @@ for tile in FORCE_tiles:
                     del mask_ds
 
             logging.info(f"Converting chunked numpy array to torch tensor, moving tensor to '{device}'.")
-            s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt)
+            s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt).float()
             s2_cube_torch = s2_cube_torch.to(device)
 
             if inference_type == ModelType.LSTM:
