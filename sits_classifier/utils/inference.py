@@ -14,7 +14,7 @@ class ModelType(Enum):
 def pad_doy_sequence(target: int, observations: List[datetime]) -> List[Union[datetime, float]]:
     diff: int = target - len(observations)
     if diff < 0:
-        raise NotImplementedError("Support for time series longer than orignial training data not implemented.")
+        observations = observations[abs(diff):]  # deletes oldest entries first
     elif diff > 0:
         observations = observations + ([0.0] * diff)
 
@@ -27,7 +27,7 @@ def pad_doy_sequence(target: int, observations: List[datetime]) -> List[Union[da
 def pad_datacube(target: int, datacube: np.ndarray) -> np.ndarray:
     diff: int = target - datacube.shape[0]
     if diff < 0:
-        raise NotImplementedError("Support for time series longer than orignial training data not implemented.")
+        datacube = np.delete(datacube, list(range(abs(diff))), axis=0)  # deletes oldest entries first
     elif diff > 0:
         datacube = np.pad(datacube, ((0, diff), (0,0), (0,0), (0,0)))
     

@@ -159,12 +159,13 @@ for tile in FORCE_tiles:
                 observations: int = s2_cube_npt.shape[2]  # is fixed to time series sequnece length (currently TRANSFORMER_TARGET_LENGTH) due to transformations above
                 bands: int = s2_cube_npt.shape[3]
                 bn_layer: torch.nn.BatchNorm1d = torch.nn.BatchNorm1d(bands)
+                # TODO can this be done in parallel?
                 for row in range(row_step):
                     for col in range(col_step):
                         pixel: np.ndarray = s2_cube_npt[row, col, :, :]
                         pixel[pixel == -9999.0] = 0
                         pixel_torch: torch.tensor = torch.from_numpy(pixel).float()
-                        pixel_normalized: np.ndarray = bn_layer(pixel_torch).detach().numpy()
+                        pixel_normalized: np.ndarray = bn_layer(pixel_torch).detach().numpy()  # likely place of type promotion float -> double 
                         s2_cube_npt[row:row + observations, col:col + bands, :] = pixel_normalized
 
 
