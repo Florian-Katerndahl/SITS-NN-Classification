@@ -10,6 +10,7 @@ import numpy as np
 import rasterio
 import rioxarray as rxr
 import torch
+from torch.nn import LayerNorm, BatchNorm2d
 import xarray
 import logging
 from time import time
@@ -112,7 +113,7 @@ for tile in FORCE_tiles:
 
     tile_rows: int = metadata["height"]
     tile_cols: int = metadata["width"]
-    output_torch: torch.tensor = torch.zeros([tile_rows, tile_cols], dtype=torch.long)
+    output_torch: torch.tensor = torch.zeros([tile_rows, tile_cols], dtype=torch.long, device=device)
 
     row_step: int = cli_args.get("row-block") or row_block
     col_step: int = cli_args.get("col-block") or col_block
@@ -127,6 +128,7 @@ for tile in FORCE_tiles:
             start_chunked: float = time()
             logging.info(f"Creating chunked data cube")
             s2_cube: Union[xarray.Dataset, xarray.DataArray, list[xarray.Dataset]] = []
+            # TODO stack numpy here? Or stack xarrays
             for cube_input in cube_inputs:
                 ds: Union[xarray.Dataset, xarray.DataArray] = rxr.open_rasterio(cube_input)
                 clipped_ds = ds.isel(y=slice(row, row + row_step),
@@ -134,11 +136,12 @@ for tile in FORCE_tiles:
                 s2_cube.append(clipped_ds)
                 ds.close()
 
+            # TODO is the stacking direction correct, i.e. index 0 the oldest image
             logging.info(f"Converting chunked data cube to numpy array")
             s2_cube_np: np.ndarray = np.array(s2_cube, ndmin=4, dtype=np.float32)
                         
             if inference_type ==  ModelType.TRANSFORMER:
-                logging.info("Adding DOY information to data cube")
+                logging.info("Padding data cube, adding Doy information")
                 sensing_doys: List[Union[datetime, float]] = pad_doy_sequence(TRANSFORMER_TARGET_LENGTH, [fp_to_doy(it) for it in cube_inputs])
                 sensing_doys_np: np.ndarray = np.array(sensing_doys)
                 sensing_doys_np = sensing_doys_np.reshape((TRANSFORMER_TARGET_LENGTH, 1, 1, 1))
@@ -147,27 +150,16 @@ for tile in FORCE_tiles:
                 s2_cube_np = pad_datacube(TRANSFORMER_TARGET_LENGTH, s2_cube_np)
                 s2_cube_np = np.concatenate((s2_cube_np, sensing_doys_np), axis=1)
 
+            if inference_type == ModelType.TRANSFORMER:
+                logging.info("Normalizing data cube")
+                s2_cube_np = (s2_cube_np - s2_cube_np.mean(axis=0)) / (s2_cube_np.std(axis=0) + 1e-6)
+            
             logging.info("Transposing Numpy array")
             s2_cube_npt: np.ndarray = np.transpose(s2_cube_np, (2, 3, 0, 1))
 
             del s2_cube
             del s2_cube_np
             del sensing_doys
-
-            if inference_type == ModelType.TRANSFORMER:
-                logging.info("Normalizing data cube")
-                observations: int = s2_cube_npt.shape[2]  # is fixed to time series sequnece length (currently TRANSFORMER_TARGET_LENGTH) due to transformations above
-                bands: int = s2_cube_npt.shape[3]
-                bn_layer: torch.nn.BatchNorm1d = torch.nn.BatchNorm1d(bands)
-                # TODO can this be done in parallel?
-                for row in range(row_step):
-                    for col in range(col_step):
-                        pixel: np.ndarray = s2_cube_npt[row, col, :, :]
-                        pixel[pixel == -9999.0] = 0
-                        pixel_torch: torch.tensor = torch.from_numpy(pixel).float()
-                        pixel_normalized: np.ndarray = bn_layer(pixel_torch).detach().numpy()  # likely place of type promotion float -> double 
-                        s2_cube_npt[row:row + observations, col:col + bands, :] = pixel_normalized
-
 
             mask: Optional[np.ndarray] = None
 
@@ -187,6 +179,10 @@ for tile in FORCE_tiles:
             s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt).float()
             s2_cube_torch = s2_cube_torch.to(device)
 
+            logging.info("Sharing Tensor")
+            s2_cube_torch.share_memory_()
+
+            logging.info(f"Starting prediction")
             if inference_type == ModelType.LSTM:
                 output_torch[row:row + row_step, col:col + col_step] = predict_lstm(inference_model, s2_cube_torch, mask,
                                                                                     col, col_step, row, row_step)
@@ -198,7 +194,7 @@ for tile in FORCE_tiles:
 
             del s2_cube_torch
 
-    output_numpy: np.array = output_torch.numpy()
+    output_numpy: np.array = output_torch.numpy(force=True)  # always move to cpu
 
     with rasterio.open(cli_args.get("out") / (tile + ".tif"), 'w', **metadata) as dst:
         dst.write_band(1, output_numpy.astype(rasterio.uint8))
