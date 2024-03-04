@@ -90,19 +90,8 @@ def predict_transformer(transformer: torch.nn.Transformer, dc: torch.tensor, mas
         r_split: Tuple[torch.tensor] = torch.vsplit(dc, rows)
         for ridx, row in enumerate(r_split):
             t = time()
-            c_split: Tuple[torch.tensor] = torch.hsplit(row, cols)
-            for cidx, col in enumerate(c_split):
-                t2 = time()
-                prediction[ridx, cidx] = predict(transformer, torch.squeeze(col, dim=0), ModelType.TRANSFORMER)
-                print(time() - t2)
+            prediction[ridx] = predict(transformer, torch.squeeze(row, dim=0), ModelType.TRANSFORMER)
             print(time() - t)
-        # for row in range(r_step):
-        #     t = time()
-        #     for col in range(c_step):
-        #         pixel: torch.tensor = dc[row, col, :, :]
-        #         print(pixel)
-        #         prediction[row, col] = predict(transformer, pixel, ModelType.TRANSFORMER)
-        #     print(time() - t)
 
     return prediction
 
