@@ -1,9 +1,11 @@
-from typing import Optional, Any, List, Union
+from typing import Optional, Any, List, Union, Tuple
 import torch
+import torch.multiprocessing as mp
 from datetime import datetime, date
 from re import compile, Pattern
 import numpy as np
 from enum import Enum
+from time import time
 
 class ModelType(Enum):
     LSTM        = 1
@@ -53,14 +55,13 @@ def predict(model, data: torch.tensor, it: ModelType) -> Any:
     :return Any: Array of predictions
     """
     with torch.no_grad():
-        outputs = model(data if it == ModelType.LSTM else data.unsqueeze(0))
+        outputs = model(data)
         _, predicted = torch.max(outputs.data if it == ModelType.LSTM else outputs, 1)
     return predicted
 
 
 def predict_lstm(lstm: torch.nn.LSTM, dc: torch.tensor, mask: Optional[np.ndarray], c: int, c_step: int, r: int, r_step: int) -> torch.tensor:
     prediction: torch.Tensor = torch.zeros((r_step, c_step), dtype=torch.long)
-    prediction.zero_()
     if mask:
         merged_row: torch.Tensor = torch.zeros(c_step, dtype=torch.long)
         for chunk_rows in range(0, r_step):
@@ -78,17 +79,30 @@ def predict_lstm(lstm: torch.nn.LSTM, dc: torch.tensor, mask: Optional[np.ndarra
     return prediction
 
 
+# TODO remove unused function parameters
 def predict_transformer(transformer: torch.nn.Transformer, dc: torch.tensor, mask: Optional[np.ndarray], c: int, c_step: int, r: int, r_step: int, device: str) -> torch.tensor:
-    prediction: torch.Tensor = torch.zeros((r_step, c_step), dtype=torch.long)
-    prediction.zero_()
+    prediction: torch.Tensor = torch.zeros((r_step, c_step), dtype=torch.long, device=device)
     if mask:
         raise NotImplementedError("Masked datacubes when using transformer models is not implemented.")
     else:
-        for row in range(r_step):
-            for col in range(c_step):
-                pixel: torch.tensor = dc[row, col, :, :]
-                pixel.to(device)
-                prediction[row, col] = predict(transformer, pixel, ModelType.TRANSFORMER).cpu()  # always move to cpu
+        # not faster, but memory usage decreased by 50%
+        rows, cols = dc.shape[:2]
+        r_split: Tuple[torch.tensor] = torch.vsplit(dc, rows)
+        for ridx, row in enumerate(r_split):
+            t = time()
+            c_split: Tuple[torch.tensor] = torch.hsplit(row, cols)
+            for cidx, col in enumerate(c_split):
+                t2 = time()
+                prediction[ridx, cidx] = predict(transformer, torch.squeeze(col, dim=0), ModelType.TRANSFORMER)
+                print(time() - t2)
+            print(time() - t)
+        # for row in range(r_step):
+        #     t = time()
+        #     for col in range(c_step):
+        #         pixel: torch.tensor = dc[row, col, :, :]
+        #         print(pixel)
+        #         prediction[row, col] = predict(transformer, pixel, ModelType.TRANSFORMER)
+        #     print(time() - t)
 
     return prediction
 
