@@ -162,7 +162,6 @@ for tile in FORCE_tiles:
             del sensing_doys
 
             mask: Optional[np.ndarray] = None
-
             if cli_args.get("masks"):
                 try:
                     mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob(cli_args.get("mglob"))][0]
@@ -178,9 +177,7 @@ for tile in FORCE_tiles:
             logging.info(f"Converting chunked numpy array to torch tensor, moving tensor to '{device}'.")
             s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt).float()
             s2_cube_torch = s2_cube_torch.to(device)
-
-            logging.info("Sharing Tensor")
-            s2_cube_torch.share_memory_()
+            del s2_cube_npt
 
             logging.info(f"Starting prediction")
             if inference_type == ModelType.LSTM:
