@@ -82,16 +82,29 @@ def predict_lstm(lstm: torch.nn.LSTM, dc: torch.tensor, mask: Optional[np.ndarra
 # TODO remove unused function parameters
 def predict_transformer(transformer: torch.nn.Transformer, dc: torch.tensor, mask: Optional[np.ndarray], c: int, c_step: int, r: int, r_step: int, device: str) -> torch.tensor:
     prediction: torch.Tensor = torch.zeros((r_step, c_step), dtype=torch.long, device=device)
-    if mask:
-        raise NotImplementedError("Masked datacubes when using transformer models is not implemented.")
+    if mask is not None:
+        merged_row: torch.Tensor = torch.zeros(c_step, dtype=torch.long, device=device)
+        rows, cols = dc.shape[:2]
+        r_split: Tuple[torch.Tensor] = torch.vsplit(dc, rows)
+        for ridx, row in enumerate(r_split):
+            # merged_row.zero_()
+            t = time()  # TODO remove
+            squeezed_row: torch.Tensor = predict(
+                transformer,
+                torch.squeeze(row, dim=0)[mask[ridx]],
+                ModelType.TRANSFORMER)
+            # merged_row[mask[ridx]] = squeezed_row  # FIXME Why does inlining this into line below (i.e. prediction[mask[ridx]]) not work? Should be 2D addressing, no?
+            prediction[ridx, mask[ridx]] = squeezed_row
+            print(time() - t)  # TODO remove
     else:
         # not faster, but memory usage decreased by 50%
+        # CUDA graph results in OOM-Error
         rows, cols = dc.shape[:2]
-        r_split: Tuple[torch.tensor] = torch.vsplit(dc, rows)
+        r_split: Tuple[torch.Tensor] = torch.vsplit(dc, rows)
         for ridx, row in enumerate(r_split):
-            t = time()
+            t = time()  # TODO remove
             prediction[ridx] = predict(transformer, torch.squeeze(row, dim=0), ModelType.TRANSFORMER)
-            print(time() - t)
+            print(time() - t)  # TODO remove
 
     return prediction
 
