@@ -1,6 +1,7 @@
 from typing import Optional, Any, List, Union, Tuple
 import torch
 import torch.multiprocessing as mp
+from torch.utils.data import TensorDataset, DataLoader
 from datetime import datetime, date
 from re import compile, Pattern
 import numpy as np
@@ -47,16 +48,16 @@ def fp_to_doy(file_path: str) -> datetime:
     return doy
 
 
+@torch.inference_mode()
 def predict(model, data: torch.tensor, it: ModelType) -> Any:
     """
-    Apply previously trained LSTM to new data
+    Apply previously trained model to new data
     :param model: previously trained model
     :param torch.tensor data: new input data
     :return Any: Array of predictions
     """
-    with torch.no_grad():
-        outputs = model(data)
-        _, predicted = torch.max(outputs.data if it == ModelType.LSTM else outputs, 1)
+    outputs = model(data)
+    _, predicted = torch.max(outputs.data if it == ModelType.LSTM else outputs, 1)
     return predicted
 
 
@@ -80,31 +81,28 @@ def predict_lstm(lstm: torch.nn.LSTM, dc: torch.tensor, mask: Optional[np.ndarra
 
 
 # TODO remove unused function parameters
+# TODO logging inside function?
+@torch.inference_mode()
 def predict_transformer(transformer: torch.nn.Transformer, dc: torch.tensor, mask: Optional[np.ndarray], c: int, c_step: int, r: int, r_step: int, device: str) -> torch.tensor:
-    prediction: torch.Tensor = torch.zeros((r_step, c_step), dtype=torch.long, device=device)
-    if mask is not None:
-        merged_row: torch.Tensor = torch.zeros(c_step, dtype=torch.long, device=device)
-        rows, cols = dc.shape[:2]
-        r_split: Tuple[torch.Tensor] = torch.vsplit(dc, rows)
-        for ridx, row in enumerate(r_split):
-            # merged_row.zero_()
-            t = time()  # TODO remove
-            squeezed_row: torch.Tensor = predict(
-                transformer,
-                torch.squeeze(row, dim=0)[mask[ridx]],
-                ModelType.TRANSFORMER)
-            # merged_row[mask[ridx]] = squeezed_row  # FIXME Why does inlining this into line below (i.e. prediction[mask[ridx]]) not work? Should be 2D addressing, no?
-            prediction[ridx, mask[ridx]] = squeezed_row
-            print(time() - t)  # TODO remove
-    else:
-        # not faster, but memory usage decreased by 50%
-        # CUDA graph results in OOM-Error
-        rows, cols = dc.shape[:2]
-        r_split: Tuple[torch.Tensor] = torch.vsplit(dc, rows)
-        for ridx, row in enumerate(r_split):
-            t = time()  # TODO remove
-            prediction[ridx] = predict(transformer, torch.squeeze(row, dim=0), ModelType.TRANSFORMER)
-            print(time() - t)  # TODO remove
+    BATCH_SIZE = 1024
+    rows, _ = dc.shape[:2]
+    split_dc = [torch.squeeze(i, dim=0) for i in torch.vsplit(dc, rows)]
+    # slightly slower approach but easier to capture output
+    ds = torch.utils.data.TensorDataset(torch.cat(split_dc, 0))  # TensorDataset splits along first dimension of input
+    dl = torch.utils.data.DataLoader(ds, batch_size=BATCH_SIZE, pin_memory=True, num_workers=4, persistent_workers=True)
+    mask_long: torch.Tensor = torch.from_numpy(np.reshape(mask, (-1,))).int()
+    prediction: torch.Tensor = torch.zeros((c_step * r_step,), dtype=torch.long)
 
-    return prediction
+    if mask is not None:
+        for _, batch in enumerate(dl):
+            for jdx, samples in enumerate(batch):
+                subset: torch.Tensor = mask_long[jdx * BATCH_SIZE:jdx * BATCH_SIZE + len(samples)]
+                input_tensor: torch.Tensor = samples.cuda(non_blocking=True)[subset]
+                prediction[jdx * BATCH_SIZE:jdx * BATCH_SIZE + len(samples)][subset] = predict(transformer, input_tensor, ModelType.TRANSFORMER).cpu()
+    else:
+        for idx, batch in enumerate(dl):
+            for jdx, samples in enumerate(batch):
+                prediction[jdx * BATCH_SIZE:jdx * BATCH_SIZE + len(samples)] = predict(transformer, samples.cuda(non_blocking=True), ModelType.TRANSFORMER).cpu()
+
+    return torch.reshape(prediction, (r_step, c_step))
 
