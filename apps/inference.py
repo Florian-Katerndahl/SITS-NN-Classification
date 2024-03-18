@@ -11,6 +11,7 @@ import rasterio
 import rioxarray as rxr
 import torch
 from torch.nn import LayerNorm, BatchNorm2d
+import torch.multiprocessing as mp
 import xarray
 import logging
 from time import time
@@ -94,6 +95,8 @@ with open(cli_args.get("input"), "rt") as f:
 
 TRANSFORMER_TARGET_LENGTH: int = 329  # TODO get from transformer class, if implemented?
 
+mp.set_sharing_strategy("file_system")
+
 for tile in FORCE_tiles:
     start: float = time()
     logging.info(f"Processing FORCE tile {tile}")
@@ -106,14 +109,14 @@ for tile in FORCE_tiles:
 
     with rasterio.open(cube_inputs[0]) as f:
         metadata = f.meta
-        metadata["count"] = 1
+        input_bands, metadata["count"] = metadata["count"], 1
         metadata["dtype"] = rasterio.uint8
         metadata["nodata"] = 0
         row_block, col_block = f.block_shapes[0]
 
     tile_rows: int = metadata["height"]
     tile_cols: int = metadata["width"]
-    output_torch: torch.tensor = torch.zeros([tile_rows, tile_cols], dtype=torch.long, device=device)
+    output_torch: torch.tensor = torch.zeros([tile_rows, tile_cols], dtype=torch.long)
 
     row_step: int = cli_args.get("row-block") or row_block
     col_step: int = cli_args.get("col-block") or col_block
@@ -127,18 +130,14 @@ for tile in FORCE_tiles:
         for col in range(0, tile_cols, col_step):
             start_chunked: float = time()
             logging.info(f"Creating chunked data cube")
-            s2_cube: Union[xarray.Dataset, xarray.DataArray, list[xarray.Dataset]] = []
-            # TODO stack numpy here? Or stack xarrays
-            for cube_input in cube_inputs:
+            s2_cube_np: np.ndarray = np.empty((len(cube_inputs), input_bands, row_step, col_step), dtype=np.float32)
+            for index, cube_input in enumerate(cube_inputs):
                 ds: Union[xarray.Dataset, xarray.DataArray] = rxr.open_rasterio(cube_input)
                 clipped_ds = ds.isel(y=slice(row, row + row_step),
                                      x=slice(col, col + col_step))
-                s2_cube.append(clipped_ds)
+                s2_cube_np[index] = clipped_ds.to_numpy()
                 ds.close()
-
-            # TODO is the stacking direction correct, i.e. index 0 the oldest image
-            logging.info(f"Converting chunked data cube to numpy array")
-            s2_cube_np: np.ndarray = np.array(s2_cube, ndmin=4, dtype=np.float32)
+                del clipped_ds
                         
             if inference_type ==  ModelType.TRANSFORMER:
                 logging.info("Padding data cube, adding Doy information")
@@ -157,11 +156,11 @@ for tile in FORCE_tiles:
             logging.info("Transposing Numpy array")
             s2_cube_npt: np.ndarray = np.transpose(s2_cube_np, (2, 3, 0, 1))
 
-            del s2_cube
             del s2_cube_np
             del sensing_doys
 
             mask: Optional[np.ndarray] = None
+
             if cli_args.get("masks"):
                 try:
                     mask_path: str = [str(p) for p in (cli_args.get("masks") / tile).glob(cli_args.get("mglob"))][0]
@@ -174,9 +173,8 @@ for tile in FORCE_tiles:
                     mask: np.ndarray = np.squeeze(np.array(mask_ds, ndmin=2, dtype=np.bool_), axis=0)
                     del mask_ds
 
-            logging.info(f"Converting chunked numpy array to torch tensor, moving tensor to '{device}'.")
+            logging.info(f"Converting chunked numpy array to torch tensor")
             s2_cube_torch: Union[torch.Tensor, torch.masked.masked_tensor] = torch.from_numpy(s2_cube_npt).float()
-            s2_cube_torch = s2_cube_torch.to(device)
             del s2_cube_npt
 
             logging.info(f"Starting prediction")
@@ -191,7 +189,7 @@ for tile in FORCE_tiles:
 
             del s2_cube_torch
 
-    output_numpy: np.array = output_torch.numpy(force=True)  # always move to cpu
+    output_numpy: np.array = output_torch.numpy(force=True)
 
     with rasterio.open(cli_args.get("out") / (tile + ".tif"), 'w', **metadata) as dst:
         dst.write_band(1, output_numpy.astype(rasterio.uint8))
